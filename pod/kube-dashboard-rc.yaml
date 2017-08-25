@@ -5,7 +5,7 @@ metadata:
   namespace: kube-system
   labels:
     k8s-app: kube-dashboard
-    version: v1.5.1
+    version: v1.6.3
     kubernetes.io/cluster-service: "true"
 spec:
   replicas: 1
@@ -15,12 +15,12 @@ spec:
     metadata:
       labels:
         k8s-app: kube-dashboard
-        version: v1.5.1
+        version: v1.6.3
         kubernetes.io/cluster-service: "true"
     spec:
       containers:
       - name: kube-dashboard
-        image: gcr.io/google_containers/kubernetes-dashboard-amd64:v1.5.1
+        image: gcr.io/google_containers/kubernetes-dashboard-amd64:v1.6.3
         resources:
           limits:
             cpu: 100m

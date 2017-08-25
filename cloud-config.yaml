@@ -1,0 +1,9 @@
+#cloud-config
+
+hostname: "coreos-k8s-1"
+users:
+  - name: "manoon"
+    groups:
+      - "sudo"
+      - "docker"
+    #passwd: $1$2UKweXyf$/wL8sAqMT8RSZxqYjCtiN.

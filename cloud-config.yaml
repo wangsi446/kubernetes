@@ -7,3 +7,4 @@ users:
       - "sudo"
       - "docker"
     #passwd: $1$2UKweXyf$/wL8sAqMT8RSZxqYjCtiN.
+    passwd: $1$Bb0VjU6l$J208EKiAUYbZtnmeFQjm71

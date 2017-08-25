@@ -1,0 +1,191 @@
+#cloud-config
+hostname: "coreos-w01"
+users:
+  - name: "core"
+    groups:
+      - "sudo"
+      - "docker"
+    passwd: $1$Bb0VjU6l$J208EKiAUYbZtnmeFQjm71
+
+write_files:
+  - path: /etc/systemd/network/10-enp0s8.network
+    permissions: 0644
+    owner: root
+    content: |
+      [Match]
+      Name=enp0s8
+      [Network]
+      DNS=8.8.8.8
+      Address=172.16.0.2/16
+  - path: /etc/kubernetes/kubernetes-worker.env
+    content: |
+      KUBELET_IMAGE_TAG=v1.5.4_coreos.0
+      ETCD_ENDPOINTS=http://172.16.0.1:2379
+      APISERVER_ENDPOINT=http://172.16.0.1:8080
+      ADVERTISE_IP=172.16.0.2
+      DNS_SERVICE_IP=172.17.0.10
+      NETWORK_PLUGIN=cni
+  - path: /etc/flannel/options.env
+    content: |
+      FLANNELD_IFACE=172.16.0.2
+      FLANNELD_ETCD_ENDPOINTS=http://172.16.0.1:2379
+  - path: /etc/kubernetes/cni/docker_opts_cni.env
+    content: |
+      DOCKER_OPT_BIP=""
+      DOCKER_OPT_IPMASQ=""
+  - path: /etc/kubernetes/cni/net.d/10-flannel.conf
+    content: |
+      {
+          "name": "podnet",
+          "type": "flannel",
+          "delegate": {
+              "isDefaultGateway": true
+          }
+      }
+  - path: /etc/kubernetes/manifests/kube-proxy.yaml
+    content: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kube-proxy
+        namespace: kube-system
+      spec:
+        hostNetwork: true
+        containers:
+        - name: kube-proxy
+          image: quay.io/coreos/hyperkube:${KUBELET_IMAGE_TAG}
+          command:
+          - /hyperkube
+          - proxy
+          - --master=${APISERVER_ENDPOINT}
+          securityContext:
+            privileged: true
+locksmith:
+  reboot_strategy: "off"
+coreos:
+  units:
+    - name: restart-network.service
+      command: start
+      content: |
+        [Unit]
+        Description=Restart network
+        Before=flanneld.service kubelet-install-cni.service kubelet-overwrite-manifests.service
+        [Service]
+        ExecStart=/usr/bin/systemctl restart systemd-networkd
+        Type=oneshot
+    - name: overwrite-sysctl.service
+      command: start
+      content: |
+        [Unit]
+        Description=Overwrite sysctl
+        [Service]
+        ExecStart=/usr/sbin/sysctl -w vm.max_map_count=262144
+        Type=oneshot
+    - name: flanneld.service
+      drop-ins:
+      - name: 50-network-config.conf
+        content: |
+          [Unit]
+          Description=Flanneld Service
+          After=restart-network.service
+          [Service]
+          ExecStartPre=/usr/bin/ln -sf /etc/flannel/options.env /run/flannel/options.env
+      command: start
+    - name: docker.service
+      drop-ins:
+      - name: 40-flanneld.conf
+        content: |
+          [Unit]
+          Requires=flanneld.service
+          After=flanneld.service
+          [Service]
+          EnvironmentFile=/etc/kubernetes/cni/docker_opts_cni.env
+      command: start
+
+    - name: kubelet-overwrite-manifests.service
+      runtime: true
+      command: start
+      content: |
+        [Unit]
+        Description=Overwrite kubernetes manifests. This service read kubernetes-worker.env and certificate in /etc/kubernetes/ssl
+        After=restart-network.service network-online.target
+        Before=kubelet.service
+        Wants=network-online.target
+        
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/bin/mkdir -p /opt/bin
+        ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/manifests
+        ExecStartPre=/usr/bin/mkdir -p /etc/kubernetes/cni/net.d
+
+        ExecStartPre=/usr/bin/wget -q -O /opt/bin/kubelet-wrapper https://raw.githubusercontent.com/napat1412/kubernetes-manifests/v1.5.4/bin/kubelet-wrapper
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/kubelet-wrapper
+        ExecStartPre=/usr/bin/wget -q -O /opt/bin/sed.sh https://raw.githubusercontent.com/napat1412/kubernetes-manifests/v1.5.4/bin/sed.sh
+        ExecStartPre=/usr/bin/chmod +x /opt/bin/sed.sh
+
+        ExecStartPre=/usr/bin/wget -q -O /etc/kubernetes/cni/docker_opts_cni.env https://raw.githubusercontent.com/napat1412/kubernetes-manifests/v1.5.4/deploy-worker/kubernetes/cni/docker_opts_cni.env
+        ExecStartPre=/usr/bin/wget -q -O /etc/kubernetes/cni/net.d/10-flannel.conf https://raw.githubusercontent.com/napat1412/kubernetes-manifests/v1.5.4/deploy-worker/kubernetes/cni/net.d/10-flannel.conf
+        
+        EnvironmentFile=/etc/kubernetes/kubernetes-worker.env
+        ExecStartPre=/opt/bin/sed.sh KUBELET_IMAGE_TAG ${KUBELET_IMAGE_TAG} /etc/kubernetes/manifests/kube-proxy.yaml
+        ExecStart=/opt/bin/sed.sh APISERVER_ENDPOINT ${APISERVER_ENDPOINT} /etc/kubernetes/manifests/kube-proxy.yaml
+ 
+    - name: kubelet-install-cni.service
+      runtime: true
+      command: start
+      content: |
+        [Unit]
+        Description=Install cni (container networking) & kubectl
+        After=restart-network.service network-online.target
+        Before=kubelet.service
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/bin/mkdir -p /opt/cni/bin
+        ExecStartPre=/usr/bin/wget -q -O /opt/cni/cni-v0.4.0.tgz https://github.com/containernetworking/cni/releases/download/v0.4.0/cni-amd64-v0.4.0.tgz
+        ExecStart=/usr/bin/tar -xvf /opt/cni/cni-v0.4.0.tgz -C /opt/cni/bin
+
+    - name: kubelet.service
+      runtime: true
+      command: start
+      content: |
+        [Unit]
+        Description=Kubelet Service
+        Requires=docker.service
+        After=kubelet-overwrite-manifests.service
+        
+        [Service]
+        ExecStartPre=-/usr/bin/mkdir -p /var/log/containers
+        ExecStartPre=-/usr/bin/mkdir -p /opt/cni/bin
+        ExecStartPre=-/usr/bin/ip addr flush dev docker0
+        
+        EnvironmentFile=/etc/kubernetes/kubernetes-worker.env
+        ExecStartPre=/usr/bin/docker pull quay.io/coreos/hyperkube:${KUBELET_IMAGE_TAG}
+        ExecStartPre=/usr/bin/rkt trust --prefix="quay.io/coreos/hyperkube" --skip-fingerprint-review
+        ExecStartPre=/usr/bin/rkt fetch quay.io/coreos/hyperkube:${KUBELET_IMAGE_TAG}
+        Environment="RKT_RUN_ARGS=--uuid-file-save=/var/run/kubelet-pod.uuid \
+          --volume dns,kind=host,source=/etc/resolv.conf \
+          --mount volume=dns,target=/etc/resolv.conf \
+          --volume var-log,kind=host,source=/var/log \
+          --mount volume=var-log,target=/var/log \
+          --volume cni-bin,kind=host,source=/opt/cni/bin \
+          --mount volume=cni-bin,target=/opt/cni/bin"
+          
+        ExecStart=/opt/bin/kubelet-wrapper \
+          --api-servers=${APISERVER_ENDPOINT} \
+          --cni-conf-dir=/etc/kubernetes/cni/net.d \
+          --network-plugin=${NETWORK_PLUGIN} \
+          --container-runtime=docker \
+          --register-node=true \
+          --allow-privileged=true \
+          --pod-manifest-path=/etc/kubernetes/manifests \
+          --hostname-override=${ADVERTISE_IP} \
+          --cluster-dns=${DNS_SERVICE_IP} \
+          --cluster-domain=cluster.local
+        ExecStop=-/usr/bin/rkt stop --uuid-file=/var/run/kubelet-pod.uuid
+        Restart=always
+        RestartSec=30
+        TimeoutSec=180min
+        [Install]
+        WantedBy=multi-user.target

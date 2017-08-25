@@ -1,7 +1,7 @@
 #cloud-config
-hostname: "coreos-w01"
+hostname: "coreos-k8s-2"
 users:
-  - name: "core"
+  - name: "manoon"
     groups:
       - "sudo"
       - "docker"
